@@ -1,0 +1,199 @@
+// Тут Бензин — публичная народная карта топлива. Схема сознательно проще,
+// чем у apps/platform: нет пользователей, нет броней, нет транзакций.
+// Источник правды на каждой станции — не отдельное поле статуса, а поток
+// анонимных меток; текущий статус и % уверенности вычисляются на чтении
+// из последних меток, а не хранятся отдельно (не дублируем факт).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Station {
+  id       String   @id @default(cuid())
+  osmId    String?  @unique // "node/123" | "way/456" — для повторного импорта
+  name     String
+  network  String? // бренд текстом: "Лукойл", "Роснефть"... без отдельной таблицы
+  address  String
+  city     String
+  region   String
+  lat      Float
+  lng      Float
+  source   String   @default("osm") // osm | manual
+  createdAt DateTime @default(now())
+
+  marks Mark[]
+
+  @@index([city])
+  @@index([lat, lng])
+}
+
+enum MarkStatus {
+  AVAILABLE // Есть
+  LOW       // Мало
+  QUEUE     // Очередь
+  OUT       // Нет
+  CLOSED    // Закрыта
+}
+
+enum QueueSize {
+  NONE       // свободно
+  UNDER_5    // до 5 минут
+  FIVE_TO_20 // 5–15 минут
+  M15_30     // 15–30 минут
+  OVER_30    // более 30 минут
+  OVER_20    // legacy (метки до перехода на минуты)
+}
+
+// Анонимная метка водителя. deviceId — случайный токен из localStorage
+// клиента (не привязан к личности), нужен только чтобы не дать одному
+// устройству накрутить ленту повторными кликами подряд.
+model Mark {
+  id        String     @id @default(cuid())
+  stationId String
+  station   Station    @relation(fields: [stationId], references: [id])
+  status    MarkStatus
+  fuelTypes String[] // какие марки СЕЙЧАС ЕСТЬ: ai92, ai95, ai98, ai100, diesel, gas
+  fuelsOut  String[]   @default([]) // какие марки ЗАКОНЧИЛИСЬ
+  limitInfo String? // лимит отпуска: NONE | FULL_TANK | L10 | L20 | L30 | L40 | L50
+  queueSize QueueSize?
+  // цены по маркам, ₽/л: { "ai95": 62.9, "diesel": 71.2 } — необязательно;
+  // хранится в истории АЗС, чтобы видеть, где дешевле (запрос владельца)
+  prices    Json?
+  deviceId  String
+  // seed-слой изолирован от реальных данных (решение владельца):
+  // реальная метка всегда перекрывает демо, демо отключается без
+  // удаления истории, партнёрские отчёты/уведомления игнорируют seed
+  source    String     @default("user") // user | seed
+  createdAt DateTime   @default(now())
+
+  @@index([stationId, createdAt])
+  @@index([createdAt])
+}
+
+// ——— Собственная аналитика (админка владельца, /admin) ———
+// Anonymous-first: только HMAC-хеши идентификаторов (ANALYTICS_HASH_SECRET),
+// никаких сырых deviceId, IP, координат и персональных данных.
+// Seed-активность сюда НЕ пишется вовсе — считаем только людей.
+
+model AnalyticsVisitor {
+  id               String   @id @default(cuid())
+  anonymousIdHash  String   @unique
+  firstSeenAt      DateTime @default(now())
+  lastSeenAt       DateTime @default(now())
+  firstUtmSource   String?
+  firstUtmMedium   String?
+  firstUtmCampaign String?
+  lastCity         String?
+
+  @@index([lastSeenAt])
+  @@index([firstSeenAt])
+}
+
+model AnalyticsSession {
+  id              String   @id @default(cuid())
+  sessionIdHash   String   @unique
+  anonymousIdHash String
+  startedAt       DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  referrerDomain  String?
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  utmContent      String? // до объявления Директа
+  yclid           String? // клик Яндекс Директа
+  city            String?
+
+  @@index([anonymousIdHash, startedAt])
+  @@index([lastSeenAt])
+  @@index([startedAt])
+  @@index([utmSource, startedAt])
+}
+
+// Попытки входа в админку: персистентный rate limit (переживает рестарт)
+model AdminLoginAttempt {
+  id        String   @id @default(cuid())
+  key       String // усечённый источник запроса, не полный IP
+  createdAt DateTime @default(now())
+
+  @@index([key, createdAt])
+}
+
+// Тех-телеметрия ключевых API: время ответа и успешность (p50/p95, ошибки)
+model ApiMetric {
+  id        String   @id @default(cuid())
+  path      String // /api/stations | /api/marks | /api/activity
+  ms        Int
+  ok        Boolean
+  createdAt DateTime @default(now())
+
+  @@index([path, createdAt])
+  @@index([createdAt])
+}
+
+model AnalyticsEvent {
+  id              String   @id @default(cuid())
+  eventName       String
+  anonymousIdHash String
+  sessionIdHash   String
+  stationId       String?
+  city            String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventName, createdAt])
+  @@index([anonymousIdHash, createdAt])
+  @@index([sessionIdHash])
+  @@index([city, createdAt])
+}
+
+// Отгруженные в Яндекс Метрику оффлайн-конверсии (по yclid). Нужна для
+// дедупа: одну реальную отметку не отправляем в Метрику дважды. Ключ —
+// id события AnalyticsEvent. Так Директ видит реальные действия в обход
+// куки-согласия (тег Метрики без согласия не срабатывает).
+model OfflineConversion {
+  id         String   @id @default(cuid())
+  eventId    String   @unique // AnalyticsEvent.id
+  yclid      String
+  target     String // id цели Метрики
+  uploadedAt DateTime @default(now())
+
+  @@index([uploadedAt])
+}
+
+// Доказательный журнал согласий на cookies/метрические программы
+// (ФЗ-152): фиксируем выбор, версию политики и время. Хеш устройства —
+// тот же HMAC, что в аналитике; для отказавшихся допускается null
+// (означает «выбор до создания идентификатора»). Хранение — 3 года.
+model ConsentLog {
+  id              String   @id @default(cuid())
+  anonymousIdHash String?
+  action          String   // granted | denied | revoked | erasure
+  policyVersion   String   // напр. "2026-07-20"
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([anonymousIdHash, createdAt])
+}
+
+// Ежедневный снапшот индекса топлива (для графика на /indeks за 30 дней).
+// computeFuelIndex() сам история не хранит (считает на лету из меток за
+// 1-2 суток) — снапшот делает та же формула раз в день, отдельным кроном
+// (prisma/snapshot-fuel-index.ts), и не трогает существующий расчёт.
+model FuelIndexSnapshot {
+  id       String   @id @default(cuid())
+  scope    String   // 'Россия' или имя города — как IndexRow.scope
+  date     DateTime // день снапшота, 00:00 UTC
+  pct      Int?     // null — данных было мало (см. MIN_DATA)
+  alive    Int
+  withData Int
+  createdAt DateTime @default(now())
+
+  @@unique([scope, date])
+  @@index([scope, date])
+}

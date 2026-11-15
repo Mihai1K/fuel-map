@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/*
+  Дизайн-токены — handbook/DESIGN.md:
+  максимум воздуха, одна тень, отступы кратны 8, тёмная тема — своя палитра.
+*/
+:root {
+  --background: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f1f2f0;
+  --border: #e5e7e3;
+  --text: #111827; /* графит вместо чисто-чёрного */
+  --muted: #6b7280;
+  --primary: #16a34a; /* главное действие всегда зелёное, спокойный тон */
+  --primary-press: #15803d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0b1220;
+    --surface: #101a2c;
+    --surface-2: #1a2740;
+    --border: #24334e;
+    --text: #e6edf7;
+    --muted: #8ba0bd;
+    --primary: #10b981;
+    --primary-press: #059669;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-press: var(--primary-press);
+  --font-sans: var(--font-inter);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--text);
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+/* Пин станции: цвет = статус, одинаков на карте и в карточке */
+.pb-marker {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--marker-color, #9ca3af);
+  border: 3px solid var(--surface);
+  box-shadow: 0 1px 6px rgb(17 24 39 / 0.3);
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+/* невидимая зона нажатия 44×44 — по пину не нужно «попадать в пиксель» */
+.pb-marker::after {
+  content: '';
+  position: absolute;
+  inset: -11px;
+  border-radius: 9999px;
+}
+.pb-marker:hover {
+  transform: scale(1.18);
+}
+.pb-marker.is-selected {
+  transform: scale(1.3);
+  box-shadow:
+    0 0 0 6px color-mix(in srgb, var(--marker-color) 25%, transparent),
+    0 1px 6px rgb(17 24 39 / 0.3);
+}
+.pb-marker.is-dim {
+  opacity: 0.3;
+}
+
+/* мягкое появление bottom sheet — движение объясняет, откуда он пришёл */
+@keyframes pb-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.pb-sheet {
+  animation: pb-slide-up 180ms ease-out;
+}
+
+/* горизонтальный скролл чипов без видимого скроллбара */
+.pb-chips {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  /* горизонтальный жест принадлежит ленте чипов, а не карте под ней */
+  touch-action: pan-x;
+  /* намёк, что список продолжается: правый край мягко тает */
+  -webkit-mask-image: linear-gradient(to right, #000 85%, transparent);
+  mask-image: linear-gradient(to right, #000 85%, transparent);
+}
+.pb-chips::-webkit-scrollbar {
+  display: none;
+}
+
+/* пульс пина при смене статуса (Яндекс-карта, DOM-маркеры) */
+@keyframes pb-pin-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.45); }
+  70% { box-shadow: 0 0 0 14px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+.pb-pin-pulse { animation: pb-pin-pulse 1.6s ease-out 3; }
